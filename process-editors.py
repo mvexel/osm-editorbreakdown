@@ -1,8 +1,16 @@
-import re
 import os
-import sys
 import csv
-from progress_bar import ProgressBar
+# on python 2, you need bz2file from PyPi because the native bz2 library does 
+# not support multi-stream bz2 files. As of python 3.3a2, multi-stream support
+# is available in the native bz2 library
+# http://python.readthedocs.org/en/latest/library/bz2.html
+import bz2file
+import sys
+import re
+try:
+    from lxml.etree import cElementTree as ElementTree
+except ImportError:
+    import cElementTree as ElementTree
 
 # License
 # =======
@@ -39,7 +47,7 @@ from progress_bar import ProgressBar
 # the editors.csv file is a text file with one entry per line.
 # this file can be created from a changesets file using:
 # bzcat /osm/planet/changesets/changesets-latest.osm.bz2 | grep -Po '\<tag k=\"created_by\" v=\"\K.*?(?=")' > editors.csv
-infile = '/osm/out/editors.csv'
+infile = '/osm/planet/changesets/changesets-latest.osm.bz2'
 outdir = '/osm/out/'
 
 # list of common editors, for these, a breakdown by version will be output in a separate CSV file, and they will be counted separately in the totals CSV.
@@ -67,37 +75,58 @@ class Results:
                 self.editors[editor][version] = 1
         else:
             self.editors[editor] = {}
-
+cscnt = 0
 r = Results()
-editors = open(infile,'r')
-lc = 0
-lines = int(os.popen('wc -l %s' % (infile)).read().split(' ')[0])
-pb = ProgressBar(lines)
-
-for line in editors:
-    lc += 1
-    if not '-q' in sys.argv and not lc % 10000:
-        pb.update_time(lines - (lines - lc))
-        print "{0}\r".format(pb),
-#    if not lc % 10000 : continue
-#    if lc == 10000: break
-    if 'JOSM' in line:
-        ro = re.search('\d{4}', line)
-        if ro:
-            version = ro.group(0)
+osmxml = bz2file.BZ2File(infile)
+context = ElementTree.iterparse(osmxml, events = ('start','end'))
+context = iter(context)
+event, root = context.next()
+changesetStarted = False
+for event, elem in context:
+    if elem.tag == 'changeset' and event == 'start':
+        changesetStarted = True
+        cscnt += 1
+        if not cscnt % 100000:
+            print '\r' + str(cscnt) + '...',
+            sys.stdout.flush()
+#        if cscnt == 1000000: break
+        user = elem.attrib.get('user')
+        editor = ''
+        version = 'n/a'
+        haseditor = False
+        empty = False
+        user = elem.attrib.get('user')
+        if elem.attrib.get('min_lon'):
+            minlon = float(elem.attrib.get('min_lon'))
+            minlat = float(elem.attrib.get('min_lat'))
+            maxlon = float(elem.attrib.get('max_lon'))
+            maxlat = float(elem.attrib.get('max_lat'))
+            if maxlon - minlon == 0 and maxlat - minlat == 0: 
+                empty = True
         else:
-            version = None
-        r.add('JOSM',version)
-        continue
-    for k in common_editors:
-        if line.find(k) == 0:
-            r.add(line[:len(k)],line[len(k):].strip())
-            break
-    else:
-        r.add('Others',line.strip())
+            empty = False
+    if elem.tag == 'changeset' and event == 'end':
+        changesetStarted = False
+        if haseditor: r.add(editor,version)
+    if changesetStarted:
+        if elem.tag == 'tag':
+            if elem.attrib.get('k') == 'created_by' and len(elem.attrib.get('v')) > 0:
+                haseditor = True
+                e = elem.attrib.get('v')
+                if e.find('JOSM') > -1:
+                    editor = 'JOSM'
+                    ro = re.search('\d{4}',e)
+                    if ro: version = ro.group(0)
+                for k in common_editors:
+                    if e.find(k) == 0: 
+                        editor = e[:len(k)]
+                        version = e[len(k):].strip()
+                if editor == '': 
+                    editor = 'Other'
+                    version = e.encode('utf-8')
+    elem.clear()
 
-print 'done.'
-
+#print r.editors
 csvtotals = csv.writer(open(os.path.join(outdir,'totals.csv'),'wb'))
 for editor,versions in r.editors.iteritems():
     csvout = csv.writer(open(os.path.join(outdir,editor+'.csv'),'wb'))
@@ -106,3 +135,4 @@ for editor,versions in r.editors.iteritems():
         csvout.writerow((k,v))
         total += int(v)
     csvtotals.writerow((editor,total))
+print 'Done! %i changesets processed' % (cscnt)
