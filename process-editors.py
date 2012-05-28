@@ -67,12 +67,17 @@ class NestedDict(dict):
 class Results:
     def __init__(self):
         self.editors = NestedDict()
-    def add(self,editor,version):
+    def add(self,editor,version, user, empty):
+        e = 0
+        if empty: e = 1
         if editor in self.editors:
             if version in self.editors[editor]:
-                self.editors[editor][version] += 1
+                self.editors[editor][version][0] += 1
+                self.editors[editor][version][1] += e
+                if user not in self.editors[editor][version][2]:
+                    self.editors[editor][version][2].append(user)
             else:
-                self.editors[editor][version] = 1
+                self.editors[editor][version] = [1, e, [user]]
         else:
             self.editors[editor] = {}
 cscnt = 0
@@ -86,7 +91,7 @@ for event, elem in context:
     if elem.tag == 'changeset' and event == 'start':
         changesetStarted = True
         cscnt += 1
-        if not cscnt % 100000:
+        if not cscnt % 10000:
             print '\r' + str(cscnt) + '...',
             sys.stdout.flush()
 #        if cscnt == 1000000: break
@@ -107,7 +112,7 @@ for event, elem in context:
             empty = False
     if elem.tag == 'changeset' and event == 'end':
         changesetStarted = False
-        if haseditor: r.add(editor,version)
+        if haseditor: r.add(editor,version,user,empty)
     if changesetStarted:
         if elem.tag == 'tag':
             if elem.attrib.get('k') == 'created_by' and len(elem.attrib.get('v')) > 0:
@@ -128,11 +133,21 @@ for event, elem in context:
 
 #print r.editors
 csvtotals = csv.writer(open(os.path.join(outdir,'totals.csv'),'wb'))
+csvtotals.writerow(('version','changesets','unique users','empty changesets'))
 for editor,versions in r.editors.iteritems():
     csvout = csv.writer(open(os.path.join(outdir,editor+'.csv'),'wb'))
+    csvout.writerow(('version','changesets','unique users','empty changesets'))
     total = 0
+    totalcount = 0
+    totalusers = 0
+    totalempties = 0
     for k,v in versions.iteritems():
-        csvout.writerow((k,v))
-        total += int(v)
-    csvtotals.writerow((editor,total))
+        countforversion = v[0]
+        empties = v[1]
+        usersforversion = len(v[2])
+        csvout.writerow((k, countforversion, usersforversion))
+        totalcount += countforversion
+        totalempties += empties
+        totalusers += usersforversion
+    csvtotals.writerow((editor,totalcount, totalusers, totalempties))
 print 'Done! %i changesets processed' % (cscnt)
